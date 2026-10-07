@@ -1,0 +1,8 @@
+LEGADO: PERÚ · Pisco 1820
+
+1. Abre "LegadoPeru-Pisco1820.html" con doble clic (Chrome o Edge, con internet).
+2. Para jugar con un amigo:
+   - Uno toca 👥 (arriba a la izquierda) -> "Crear sala con código" y comparte el código de 5 letras.
+   - El otro toca 👥 -> "Unirme con un código" y lo escribe.
+3. Quien crea la sala debe mantener su pantalla abierta.
+Si no conecta, prueben con otra red (por ejemplo, los datos del celular).
