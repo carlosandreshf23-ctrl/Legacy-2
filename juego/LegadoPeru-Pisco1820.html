@@ -9563,6 +9563,150 @@ const _chipP2P = Multi.hudChip.bind(Multi);
 Multi.hudChip = function () { _chipP2P(); if (this.chip && P2P.codigo && !this.chip.title) this.chip.title = 'Sala ' + P2P.codigo; };
 addEventListener('pagehide', () => { if (P2P.peer) try { P2P.enviar({ t: 'adios' }); P2P.peer.destroy(); } catch (e) { } });
 
+// ===== EN VIVO CON EL ANFITRIÓN: en la sala con código, la computadora que creó la sala manda sobre los vecinos, los animales, la hora, el clima, las casas y los eventos (sismos, tsunami, huaico, carreta, procesión de las ánimas); los invitados los reciben en tiempo real y ven lo mismo =====
+const Sync = {
+  sid: 0, rem: false, animales: new Map(), listo: false,
+  anfitrion() { return !!(P2P.peer && P2P.host && P2P.ok && P2P.conns.some(c => c.open)); },
+  invitado() { return !!(P2P.peer && !P2P.host && P2P.ok); },
+  idHost() { return 'legado-pisco-' + P2P.codigo; },
+  mandar(topic, data) { P2P.enviar({ t: 'ev', topic, data }); },
+  // ---------- anfitrión: foto del pueblo 5 veces por segundo ----------
+  foto() {
+    const V = [], A = [];
+    for (const v of Vecinos) {
+      if (!v.id || v.id.startsWith('rem_')) continue; let fr = 'i0'; try { fr = v.frame(); } catch (e) { }
+      const b = v.burbuja && v.burbuja.t > 0 ? limpiarTxt(v.burbuja.txt, 60) : '';
+      V.push([v.id, v.d.pj, limpiarTxt(v.d.nombre, 30), Math.round(v.x), Math.round(v.y), v.sala || '', v.dir, v.flip ? 1 : 0, fr, v.anim || '', v.cara || 'n', (v.visible ? 1 : 0) | (v.muerto ? 2 : 0) | (v.ko > 0 ? 4 : 0) | (v.balde ? 8 : 0) | (v.prisa ? 16 : 0), b, limpiarTxt(v.d.rol, 30)]);
+    }
+    for (const a of Animales) {
+      if (!a._sid) a._sid = ++this.sid;
+      A.push([a._sid, a.t, Math.round(a.x), Math.round(a.y), Math.round(a.z || 0), a.sala || '', a.flip ? 1 : 0, a.f || 'i', (a.oculto > 0 ? 1 : 0) | (a.muerto ? 2 : 0) | (a.llevado ? 4 : 0), a.col || '', a.id || '', Math.round(a.vx || 0), Math.round(a.vy || 0)]);
+    }
+    return { v: V, a: A };
+  },
+  mundo() {
+    const C = Estado.clima || {}, p = Fenomenos.plan || {}, hp = {};
+    for (const e of EDIFICIOS) hp[e.id] = e.hp;
+    return { dia: Estado.dia, hora: Math.round(Estado.hora), fase: C.fase, fin: C.finFase, lluvia: p.lluvia || null, hp };
+  },
+  // ---------- invitado: aplicar lo que manda el anfitrión ----------
+  aplicarFoto(d) {
+    if (!d || !Array.isArray(d.v) || !Array.isArray(d.a)) return;
+    const vistos = new Set();
+    for (const e of d.v) {
+      if (!Array.isArray(e) || typeof e[0] !== 'string') continue; const id = e[0].slice(0, 40); if (id.startsWith('rem_')) continue; vistos.add(id);
+      const x = +e[3] || 0, y = +e[4] || 0, sala = typeof e[5] === 'string' ? e[5].slice(0, 30) : '';
+      let v = Vecinos.find(n => n.id === id);
+      if (!v) { v = new Vecino({ id, nombre: limpiarTxt(e[2], 30) || 'Vecino', rol: limpiarTxt(e[13], 30), pj: PJ[e[1]] ? e[1] : 'tomas', x: 0, y: 0 }); v.hogar = ''; v.x = x; v.y = y; Vecinos.push(v); }
+      if (!v._sync || v.sala !== sala || Math.abs(v.x - x) > 160 || Math.abs(v.y - y) > 160) { v.x = x; v.y = y; }
+      v._sync = true; v._tx = x; v._ty = y; v.sala = sala; v.ruta = null;
+      v.dir = ['up', 'down', 'side'].includes(e[6]) ? e[6] : 'down'; v.flip = !!e[7];
+      v._fr = typeof e[8] === 'string' && /^[a-z0-9]{1,4}$/.test(e[8]) ? e[8] : 'i0';
+      v.anim = typeof e[9] === 'string' && /^[a-zA-Z]{0,16}$/.test(e[9]) ? e[9] : '';
+      v.cara = typeof e[10] === 'string' && /^[a-z]$/.test(e[10]) ? e[10] : 'n';
+      const f = e[11] | 0; v.visible = !!(f & 1); v.muerto = !!(f & 2); v.ko = f & 4 ? Math.max(v.ko || 0, 1) : 0; v.balde = f & 8 ? 'lleno' : null; v.prisa = !!(f & 16);
+      const b = limpiarTxt(e[12], 60); if (!b) v.burbuja = null; else if (!v.burbuja || v.burbuja.txt !== b) v.burbuja = { txt: b, t: 3.5 }; else v.burbuja.t = Math.max(v.burbuja.t, 1);
+    }
+    for (let i = Vecinos.length - 1; i >= 0; i--) { const v = Vecinos[i]; if (v._sync && !vistos.has(v.id)) Vecinos.splice(i, 1); }
+    const vivos = new Set();
+    for (const e of d.a) {
+      if (!Array.isArray(e)) continue; const sid = e[0] | 0, t = e[1]; if (!sid || typeof t !== 'string' || !/^[a-zA-Z]{2,16}$/.test(t)) continue;
+      let a = this.animales.get(sid);
+      if (!a || a.t !== t) {
+        const col = typeof e[9] === 'string' && /^#[0-9A-Fa-f]{3,8}$/.test(e[9]) ? e[9] : undefined, id = typeof e[10] === 'string' ? e[10].slice(0, 30) : '';
+        try { a = new Animal({ t, x: 0, y: 0, id, color: col }); } catch (er) { continue; }
+        if (col) a.col = col; a._sync = true; a._sid = sid; a.x = +e[2] || 0; a.y = +e[3] || 0; this.animales.set(sid, a); Animales.push(a);
+      }
+      vivos.add(a); a._tx = +e[2] || 0; a._ty = +e[3] || 0; a._tz = +e[4] || 0;
+      const sala = typeof e[5] === 'string' ? e[5].slice(0, 30) : ''; if (a.sala !== sala || Math.abs(a.x - a._tx) > 160 || Math.abs(a.y - a._ty) > 160) { a.x = a._tx; a.y = a._ty; } a.sala = sala;
+      a.flip = !!e[6]; a.f = typeof e[7] === 'string' && /^[a-z0-9]{1,5}$/.test(e[7]) ? e[7] : 'i';
+      const f = e[8] | 0; a.oculto = f & 1 ? 1e9 : 0; a.muerto = !!(f & 2); a._lejos = !!(f & 4); a.vx = +e[11] || 0; a.vy = +e[12] || 0;
+    }
+    // los animales del invitado son los del anfitrión (salvo el que monta o lleva en brazos)
+    for (let i = Animales.length - 1; i >= 0; i--) { const a = Animales[i]; if (vivos.has(a) || a === Jugador.montura || a.llevado) continue; Animales.splice(i, 1); if (a._sid) this.animales.delete(a._sid); }
+    if (!this.listo) { this.listo = true; UI.toast('En vivo con el anfitrión: ves a los mismos vecinos, animales y eventos.'); }
+  },
+  aplicarMundo(d) {
+    if (!d || typeof d !== 'object') return;
+    if (typeof d.dia === 'number' && typeof d.hora === 'number') { const yo = Estado.dia * 1440 + Estado.hora, el = d.dia * 1440 + d.hora; if (Math.abs(yo - el) > 3) { Estado.dia = d.dia | 0; Estado.hora = clamp(d.hora, 0, 1439); } }
+    const C = Estado.clima;
+    if (C && ['normal', 'nino', 'nina'].includes(d.fase) && C.fase !== d.fase) { C.fase = d.fase; C.finFase = d.fin | 0; try { Fenomenos.anunciarFase(); Fenomenos.aplicarFase(); } catch (e) { } }
+    const ll = Array.isArray(d.lluvia) && d.lluvia.length === 3 && d.lluvia.every(n => typeof n === 'number') ? d.lluvia : null;
+    Fenomenos.plan = { lluvia: ll, sismo: null, hecho: {} };
+    let cambio = false;
+    if (d.hp && typeof d.hp === 'object') for (const e of EDIFICIOS) {
+      const n = d.hp[e.id]; if (typeof n !== 'number' || n === e.hp) continue;
+      if (e.hp > 0 && n <= 0) { Juego.derrumbe(e, true); continue; }
+      if (e.hp <= 0 && n > 0) { SPR.delete('ruina|' + e.id); cambio = true; }
+      e.hp = n; Estado.mundo['ed_' + e.id] = { hp: n, caidaDia: e.caidaDia };
+    }
+    if (cambio) recalcularSolidos();
+  },
+  aplicarEvento(d) {
+    if (!d || typeof d.k !== 'string') return; const a = Array.isArray(d.a) ? d.a : [];
+    this.rem = true;
+    try {
+      if (d.k === 'sismo') { const m = a[0] | 0; if (m >= 1 && m <= 3) Fenomenos.iniciarSismo(m); }
+      else if (d.k === 'tsunami') Fenomenos.iniciarTsunami();
+      else if (d.k === 'huaico') Fenomenos.iniciarHuaico();
+      else if (d.k === 'procesion') Procesion.iniciar();
+      else if (d.k === 'carreta' && d.c) { Carreta.activa = true; Carreta.paso = 0; Carreta.x = +d.c.x || 0; Carreta.y = +d.c.y || 0; Carreta.dirx = d.c.dirx < 0 ? -1 : 1; }
+    } finally { this.rem = false; }
+  },
+  // el invitado acerca suavemente a cada vecino y animal hacia donde dice el anfitrión
+  acercar(o, dt) { const k = 1 - Math.exp(-dt * 10); o.x += (o._tx - o.x) * k; o.y += (o._ty - o.y) * k; }
+};
+// los vecinos y animales del anfitrión no piensan por su cuenta en la pantalla del invitado
+const _vUpdSync = Vecino.prototype.update;
+Vecino.prototype.update = function (dt) {
+  if (!this._sync || !Sync.invitado()) return _vUpdSync.call(this, dt);
+  this.t += dt; this.parpadeo -= dt; if (this.parpadeo < -0.12) this.parpadeo = 2 + Math.random() * 4;
+  if (this.burbuja && (this.burbuja.t -= dt) <= 0) this.burbuja = null; Sync.acercar(this, dt);
+};
+const _vFrameSync = Vecino.prototype.frame;
+Vecino.prototype.frame = function () { return this._sync && Sync.invitado() ? this._fr || 'i0' : _vFrameSync.call(this); };
+const _aUpdSync = Animal.prototype.update;
+Animal.prototype.update = function (dt) {
+  if (!this._sync || !Sync.invitado() || this === Jugador.montura || this.llevado) return _aUpdSync.call(this, dt);
+  Sync.acercar(this, dt); this.z += ((this._tz || 0) - this.z) * (1 - Math.exp(-dt * 10));
+};
+const _dASync = Render.d_a;
+Render.d_a = function (g, a, t) { if (a._lejos && Sync.invitado()) return; return _dASync.call(this, g, a, t); };
+// los eventos solo los dispara el anfitrión; al invitado le llegan por la sala
+// (se avisa solo cuando el evento de verdad empezó: si ya estaba en curso, no se repite)
+const eventoSync = (obj, metodo, k, activo, extra) => {
+  const orig = obj[metodo];
+  obj[metodo] = function (...args) {
+    if (Sync.invitado() && !Sync.rem) return false;
+    const antes = activo(), r = orig.apply(this, args);
+    if (Sync.anfitrion() && !antes && activo()) Sync.mandar('sync_evt', { k, a: args.slice(0, 1), c: extra ? extra() : null });
+    return r;
+  };
+};
+eventoSync(Fenomenos, 'iniciarSismo', 'sismo', () => !!Fenomenos.sismo);
+eventoSync(Fenomenos, 'iniciarTsunami', 'tsunami', () => !!Fenomenos.tsunami);
+eventoSync(Fenomenos, 'iniciarHuaico', 'huaico', () => !!Fenomenos.huaico);
+eventoSync(Procesion, 'iniciar', 'procesion', () => !!Procesion.activa);
+eventoSync(Carreta, 'iniciar', 'carreta', () => Carreta.activa, () => ({ x: Math.round(Carreta.x), y: Math.round(Carreta.y), dirx: Carreta.dirx }));
+// el daño a las casas lo calcula el anfitrión (el invitado recibe la vida de cada casa)
+const _danarSync = Fenomenos.danar;
+Fenomenos.danar = function (e, n) { if (Sync.invitado()) return; return _danarSync.call(this, e, n); };
+// el clima del invitado no cambia de fase por su cuenta
+const _nuevoDiaSync = Fenomenos.nuevoDia;
+Fenomenos.nuevoDia = function () {
+  const C = Estado.clima, f = C && C.fase, fin = C && C.finFase; _nuevoDiaSync.call(this);
+  if (Sync.invitado() && C) { C.fase = f; C.finFase = fin; this.plan = { lluvia: null, sismo: null, hecho: {} }; }
+};
+// recibir (solo lo que viene del anfitrión)
+for (const [topic, fn] of [['sync_foto', d => Sync.aplicarFoto(d)], ['sync_mundo', d => Sync.aplicarMundo(d)], ['sync_evt', d => Sync.aplicarEvento(d)]])
+  (P2P.oyentes[topic] = P2P.oyentes[topic] || []).push(m => { if (m.isMe || P2P.host || m.peer !== Sync.idHost()) return; try { fn(m.data); } catch (e) { console.error(topic, e); } });
+// enviar: foto del pueblo cada 0,2 s y el mundo cada 2 s
+setInterval(() => { if (Sync.anfitrion()) Sync.mandar('sync_foto', Sync.foto()); }, 200);
+setInterval(() => { if (Sync.anfitrion()) Sync.mandar('sync_mundo', Sync.mundo()); }, 2000);
+// al entrar alguien nuevo, el mundo se manda de inmediato
+const _conectarSync = P2P.conectar.bind(P2P);
+P2P.conectar = function (c) { _conectarSync(c); c.on('open', () => { if (this.host) setTimeout(() => { if (Sync.anfitrion()) { Sync.mandar('sync_mundo', Sync.mundo()); Sync.mandar('sync_foto', Sync.foto()); } }, 300); }); };
+
 </script>
 </body>
 </html>
